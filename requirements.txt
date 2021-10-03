@@ -5,7 +5,7 @@ matplotlib
 moviepy<1.0.0
 numpy
 opencv-python
-pims
+pims<0.5
 PyOpenGL
 pyquaternion
 pyyaml
