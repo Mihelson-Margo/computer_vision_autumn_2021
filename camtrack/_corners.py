@@ -91,13 +91,6 @@ class FrameCorners:
         yield self.dist_err
 
     def add_points(self, ids, points, sizes, min_eigenvals, dist_err):
-        if ids is None:
-            if self._ids.shape[0] == 0:
-                next_id = 0
-            else:
-                next_id = max(self._ids) + 1
-            ids = np.arange(next_id, next_id + points.shape[0]).reshape((-1, 1))
-
         self._ids = np.concatenate((self._ids, ids.reshape((-1, 1))))
         self._points = np.concatenate((self._points, points.reshape((-1, 2))))
         self._sizes = np.concatenate((self._sizes, sizes.reshape((-1, 1))))
@@ -234,6 +227,18 @@ def calc_track_interval_mappings(corner_storage: CornerStorage) -> np.ndarray:
         left[unique] = np.minimum(left[unique], i)
         right[unique] = np.maximum(right[unique], i)
     return left, right
+
+
+'''
+def check_ids(corner_storage):
+    max_id = max(corners.ids.max() for corners in corner_storage)
+    m = np.full((max_id + 1,), -1)
+    for i, corners in enumerate(corner_storage):
+        if np.sum(m[corners.ids.flatten()] == 0):
+            print("Ups")
+        m[m == 1] = 0
+        m[corners.ids.flatten()] = 1
+'''
 
 
 def calc_track_len_array_mapping(corner_storage: CornerStorage) -> np.ndarray:

@@ -119,7 +119,7 @@ def create_mask_by_corners(image, corners, compress_rate=1):
     return mask
 
 
-def add_corners(image, feature_params, corners=None, max_pyramid_lvl=4):
+def add_corners(image, feature_params, max_corner_id, corners=None, max_pyramid_lvl=4):
     if corners is not None:
         mask = create_mask_by_corners(image, corners)
     else:
@@ -134,14 +134,15 @@ def add_corners(image, feature_params, corners=None, max_pyramid_lvl=4):
             new_p = new_p.reshape((-1, 2)) * compress_rate
             n = new_p.shape[0]
             new_sizes = np.full(n, feature_params['blockSize']*compress_rate).reshape((-1, 1))
-
-            corners.add_points(None, new_p, new_sizes, np.ones((n, 1)), np.zeros((n, 1)))
+            new_ids = np.arange(max_corner_id, max_corner_id + n)
+            max_corner_id += n
+            corners.add_points(new_ids, new_p, new_sizes, np.ones((n, 1)), np.zeros((n, 1)))
 
         compress_rate *= 2
         small_img = cv2.pyrDown(small_img)
         mask = create_mask_by_corners(small_img, corners, compress_rate)
 
-    return corners
+    return corners, max_corner_id
 
 
 def lk_params_for_pyramid_lvl(lk_params, compress_rate):
@@ -205,7 +206,8 @@ def _build_impl(frame_sequence: pims.FramesSequence,
                      minEigThreshold=1e-3)  # 1.5*1e-2)
 
     image_0 = (frame_sequence[0] * 255.0).astype(np.uint8)
-    corners = add_corners(image_0, feature_params)
+    max_corner_id = 0
+    corners, max_corner_id = add_corners(image_0, feature_params, max_corner_id)
     builder.set_corners_at_frame(0, corners)
 
     for frame, image_1 in enumerate(frame_sequence[1:], 1):
@@ -213,7 +215,7 @@ def _build_impl(frame_sequence: pims.FramesSequence,
         corners = track_corners(image_0, image_1, corners, lk_params)
         
         if frame % 5 == 0:
-            corners = add_corners(image_1, feature_params, corners)
+            corners, max_corner_id = add_corners(image_1, feature_params, max_corner_id, corners)
 
         builder.set_corners_at_frame(frame, corners)
         image_0 = image_1
