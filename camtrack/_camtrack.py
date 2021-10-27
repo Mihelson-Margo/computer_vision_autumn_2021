@@ -172,6 +172,7 @@ def _calc_reprojection_error_mask_one_view(points3d, points2d, view_mat,
                                               intrinsic_mat @ view_mat)
     return reproj_errs.flatten() < max_reprojection_error
 
+
 '''
 def _calc_reprojection_error_mask(points3d, points2d_1, points2d_2,
                                   view_mat_1, view_mat_2, intrinsic_mat,
@@ -187,6 +188,7 @@ def _calc_reprojection_error_mask(points3d, points2d_1, points2d_2,
     )
     return reproj_err_mask
 '''
+
 
 def _calc_reprojection_error_mask(points3d, points2d_1, points2d_2,
                                   view_mat_1, view_mat_2, intrinsic_mat,
