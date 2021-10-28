@@ -46,12 +46,20 @@ class FrameCorners:
         :param points: coordinates of corners
         :param sizes: block sizes used for corner calculation (in pixels on original image format)
         """
-        sorting_idx = np.argsort(ids.flatten())
-        self._ids = ids[sorting_idx].reshape(-1, 1)
-        self._points = points[sorting_idx].reshape(-1, 2)
-        self._sizes = sizes[sorting_idx].reshape(-1, 1)
-        self._min_eigenvals = min_eigenvals[sorting_idx].reshape(-1, 1)
-        self._dist_err = dist_err[sorting_idx].reshape(-1, 1)
+        self._ids = ids
+        self._points = points
+        self._sizes = sizes
+        self._min_eigenvals = min_eigenvals
+        self._dist_err = dist_err
+        self._sort()
+
+    def _sort(self):
+        sorting_idx = np.argsort(self.ids.flatten())
+        self._ids = self.ids[sorting_idx].reshape(-1, 1)
+        self._points = self.points[sorting_idx].reshape(-1, 2)
+        self._sizes = self.sizes[sorting_idx].reshape(-1, 1)
+        self._min_eigenvals = self.min_eigenvals[sorting_idx].reshape(-1, 1)
+        self._dist_err = self.dist_err[sorting_idx].reshape(-1, 1)
 
     @staticmethod
     def empty_frame():
@@ -96,6 +104,7 @@ class FrameCorners:
         self._sizes = np.concatenate((self._sizes, sizes.reshape((-1, 1))))
         self._min_eigenvals = np.concatenate((self._min_eigenvals, min_eigenvals.reshape((-1, 1))))
         self._dist_err = np.concatenate((self._dist_err, dist_err.reshape(-1, 1)))
+        self._sort()
 
 
 def filter_frame_corners(frame_corners: FrameCorners,

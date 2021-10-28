@@ -17,7 +17,9 @@ __all__ = [
     'to_camera_center',
     'to_opencv_camera_mat3x3',
     'triangulate_correspondences',
-    'view_mat3x4_to_pose'
+    'view_mat3x4_to_pose',
+    'solve_PnP',
+    'SolvePnPParameters'
 ]
 
 from collections import namedtuple
@@ -117,9 +119,27 @@ def _calc_triangulation_angle_mask(view_mat_1: np.ndarray,
     return angles_mask, np.median(coss_abs)
 
 
+def _calc_3d_errors(points3d: np.ndarray,
+                    view_mat_1: np.ndarray, view_mat_2: np.ndarray,
+                    errors2d_1: np.ndarray, errors2d_2: np.ndarray) \
+        -> np.ndarray:
+    camera_center_1 = to_camera_center(view_mat_1)
+    camera_center_2 = to_camera_center(view_mat_2)
+    center = (camera_center_1 + camera_center_2)/2
+    dists = np.linalg.norm(points3d - center, axis=1)
+    # points3d.shape
+
+    vecs_1 = normalize(camera_center_1 - points3d)
+    vecs_2 = normalize(camera_center_2 - points3d)
+    coss = np.einsum('ij,ij->i', vecs_1, vecs_2)
+    sins = np.sqrt(1 - coss**2)
+    return (errors2d_1 + errors2d_2)*dists/sins
+    #return np.abs(coss)
+
+
 Correspondences = namedtuple(
     'Correspondences',
-    ('ids', 'points_1', 'points_2')
+    ('ids', 'points_1', 'points_2', 'errors_1', 'errors_2')
 )
 
 
@@ -140,7 +160,9 @@ def _remove_correspondences_with_ids(correspondences: Correspondences,
     return Correspondences(
         ids[mask],
         correspondences.points_1[mask],
-        correspondences.points_2[mask]
+        correspondences.points_2[mask],
+        correspondences.errors_1[mask],
+        correspondences.errors_2[mask]
     )
 
 
@@ -152,7 +174,9 @@ def build_correspondences(corners_1: FrameCorners, corners_2: FrameCorners,
     corrs = Correspondences(
         ids_1[indices_1],
         corners_1.points[indices_1],
-        corners_2.points[indices_2]
+        corners_2.points[indices_2],
+        corners_1.min_eigenvals[indices_1],
+        corners_2.min_eigenvals[indices_2]
     )
     if ids_to_remove is not None:
         corrs = _remove_correspondences_with_ids(corrs, ids_to_remove)
@@ -209,7 +233,7 @@ def triangulate_correspondences(correspondences: Correspondences,
                                 view_mat_1: np.ndarray, view_mat_2: np.ndarray,
                                 intrinsic_mat: np.ndarray,
                                 parameters: TriangulationParameters) \
-        -> Tuple[np.ndarray, np.ndarray, float]:
+        -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     points2d_1 = correspondences.points_1
     points2d_2 = correspondences.points_2
 
@@ -228,6 +252,11 @@ def triangulate_correspondences(correspondences: Correspondences,
                                      normalized_points2d_1.T,
                                      normalized_points2d_2.T)
     points3d = cv2.convertPointsFromHomogeneous(points3d.T).reshape(-1, 3)
+
+    errors3d = _calc_3d_errors(
+        points3d, view_mat_1, view_mat_2,
+        correspondences.errors_1, correspondences.errors_2
+    )
 
     reprojection_error_mask = _calc_reprojection_error_mask(
         points3d,
@@ -250,7 +279,7 @@ def triangulate_correspondences(correspondences: Correspondences,
     )
     common_mask = reprojection_error_mask & z_mask & angle_mask
 
-    return points3d[common_mask], correspondences.ids[common_mask], median_cos
+    return points3d[common_mask], correspondences.ids[common_mask], errors3d
 
 
 SolvePnPParameters = namedtuple(
@@ -259,20 +288,29 @@ SolvePnPParameters = namedtuple(
 )
 
 
-def solve_PnP(points_2d: np.ndarray, points_3d: np.array, intrinsic_mat: np.ndarray,
-              parameters: SolvePnPParameters):
-    _, initial_rvec, initial_tvec, inliers = cv2.solvePnPRansac(points_3d, points_2d,
-                                                                intrinsic_mat, distCoeffs=None)
+def solve_PnP(points_2d: np.ndarray, points_3d: np.array,
+              intrinsic_mat: np.ndarray, parameters: SolvePnPParameters) \
+        -> Tuple[np.ndarray, np.ndarray]:
+    _, initial_rvec, initial_tvec, inliers = cv2.solvePnPRansac(
+        points_3d,
+        points_2d,
+        intrinsic_mat,
+        distCoeffs=None
+    )
     rvec, tvec = cv2.solvePnPRefineLM(points_3d[inliers], points_2d[inliers],
                                       intrinsic_mat, distCoeffs=None,
                                       rvec=initial_rvec, tvec=initial_tvec)
     view_mat = rodrigues_and_translation_to_view_mat3x4(rvec, tvec)
-    reproj_mask = _calc_reprojection_error_mask_one_view(points_3d, points_2d,
-                                                         view_mat, intrinsic_mat,
-                                                         parameters.max_reprojection_error)
+    reproj_mask = _calc_reprojection_error_mask_one_view(
+        points_3d,
+        points_2d,
+        view_mat,
+        intrinsic_mat,
+        parameters.max_reprojection_error
+    )
     z_mask = _calc_z_mask(points_3d, view_mat, parameters.min_depth)
     inliers_mask = reproj_mask & z_mask
-    return view_mat, inliers_mask
+    return view_mat, inliers
 
 
 def check_inliers_mask(inliers_mask: np.ndarray,
@@ -301,13 +339,14 @@ def rodrigues_and_translation_to_view_mat3x4(r_vec: np.ndarray,
 
 class PointCloudBuilder:
 
-    __slots__ = ('_ids', '_points', '_colors')
+    __slots__ = ('_ids', '_points', '_errors', '_colors')
 
     def __init__(self, ids: np.ndarray = None, points: np.ndarray = None,
-                 colors: np.ndarray = None) -> None:
+                 errors: np.ndarray = None, colors: np.ndarray = None) -> None:
         super().__init__()
         self._ids = ids if ids is not None else np.array([], dtype=np.int64)
         self._points = points if points is not None else np.array([])
+        self._errors = errors if errors is not None else np.array([])
         self._colors = colors
         self._sort_data()
 
@@ -320,6 +359,10 @@ class PointCloudBuilder:
         return self._points
 
     @property
+    def errors(self) -> np.ndarray:
+        return self._errors
+
+    @property
     def colors(self) -> np.ndarray:
         return self._colors
 
@@ -328,15 +371,20 @@ class PointCloudBuilder:
         yield self.points
         yield self.colors
 
-    def add_points(self, ids: np.ndarray, points: np.ndarray) -> None:
+    def add_points(self, ids: np.ndarray, points: np.ndarray,
+                   errors: np.ndarray) -> int:
         ids = ids.reshape(-1, 1)
         points = points.reshape(-1, 3)
+        errors = errors.reshape(-1, 1)
         _, (idx_1, idx_2) = snp.intersect(self.ids.flatten(), ids.flatten(),
                                           indices=True)
-        self.points[idx_1] = points[idx_2]
+        mask_new = (self._errors[idx_1] > errors[idx_2]).flatten()
+        self._points[idx_1[mask_new]] = points[idx_2[mask_new]]
         self._ids = np.vstack((self.ids, np.delete(ids, idx_2, axis=0)))
         self._points = np.vstack((self.points, np.delete(points, idx_2, axis=0)))
+        self._errors = np.vstack((self.errors, np.delete(errors, idx_2, axis=0)))
         self._sort_data()
+        return np.sum(mask_new)
 
     def set_colors(self, colors: np.ndarray) -> None:
         assert self._ids.size == colors.shape[0]
@@ -354,6 +402,7 @@ class PointCloudBuilder:
         sorting_idx = np.argsort(self.ids.flatten())
         self._ids = self.ids[sorting_idx].reshape(-1, 1)
         self._points = self.points[sorting_idx].reshape(-1, 3)
+        self._errors = self.errors[sorting_idx].reshape(-1, 1)
         if self.colors is not None:
             self._colors = self.colors[sorting_idx].reshape(-1, 3)
 
