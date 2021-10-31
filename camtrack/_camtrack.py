@@ -290,7 +290,7 @@ SolvePnPParameters = namedtuple(
 
 def solve_PnP(points_2d: np.ndarray, points_3d: np.array,
               intrinsic_mat: np.ndarray, parameters: SolvePnPParameters) \
-        -> Tuple[np.ndarray, np.ndarray]:
+        -> Tuple[np.ndarray, int]:
     _, initial_rvec, initial_tvec, inliers = cv2.solvePnPRansac(
         points_3d,
         points_2d,
@@ -301,6 +301,7 @@ def solve_PnP(points_2d: np.ndarray, points_3d: np.array,
                                       intrinsic_mat, distCoeffs=None,
                                       rvec=initial_rvec, tvec=initial_tvec)
     view_mat = rodrigues_and_translation_to_view_mat3x4(rvec, tvec)
+    '''
     reproj_mask = _calc_reprojection_error_mask_one_view(
         points_3d,
         points_2d,
@@ -310,7 +311,8 @@ def solve_PnP(points_2d: np.ndarray, points_3d: np.array,
     )
     z_mask = _calc_z_mask(points_3d, view_mat, parameters.min_depth)
     inliers_mask = reproj_mask & z_mask
-    return view_mat, inliers
+    '''
+    return view_mat, inliers.shape[0]
 
 
 def check_inliers_mask(inliers_mask: np.ndarray,
