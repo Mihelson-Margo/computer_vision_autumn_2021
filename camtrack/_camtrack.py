@@ -31,6 +31,7 @@ import numpy as np
 import pims
 from sklearn.preprocessing import normalize
 import sortednp as snp
+from scipy.optimize import least_squares
 
 import frameseq
 from corners import CornerStorage, FrameCorners, build, load
@@ -74,6 +75,21 @@ def pose_to_view_mat3x4(pose: Pose) -> np.ndarray:
         pose.r_mat.T,
         pose.r_mat.T @ -pose.t_vec.reshape(-1, 1)
     ))
+
+
+def mat3x4_to_vec6(mat3x4):
+    v, _ = cv2.Rodrigues(mat3x4[:, :3])
+    return np.hstack((v.flatten(), mat3x4[:, 3]))
+
+
+def vec6_to_mat3x4(vec6):
+    r = vec6[:3].reshape(-1, 3)
+    t = vec6[3:]
+    R, _ = cv2.Rodrigues(r)
+    mat3x4 = np.zeros((3, 4))
+    mat3x4[:, :3] = R
+    mat3x4[:, 3] = t
+    return mat3x4
 
 
 def _to_homogeneous(points):
@@ -197,23 +213,6 @@ def _calc_reprojection_error_mask_one_view(points3d, points2d, view_mat,
     return reproj_errs.flatten() < max_reprojection_error
 
 
-'''
-def _calc_reprojection_error_mask(points3d, points2d_1, points2d_2,
-                                  view_mat_1, view_mat_2, intrinsic_mat,
-                                  max_reprojection_error):
-    # pylint:disable=too-many-arguments
-    reproj_errs_1 = compute_reprojection_errors(points3d, points2d_1,
-                                                intrinsic_mat @ view_mat_1)
-    reproj_errs2 = compute_reprojection_errors(points3d, points2d_2,
-                                               intrinsic_mat @ view_mat_2)
-    reproj_err_mask = np.logical_and(
-        reproj_errs_1.flatten() < max_reprojection_error,
-        reproj_errs2.flatten() < max_reprojection_error
-    )
-    return reproj_err_mask
-'''
-
-
 def _calc_reprojection_error_mask(points3d, points2d_1, points2d_2,
                                   view_mat_1, view_mat_2, intrinsic_mat,
                                   max_reprojection_error):
@@ -288,9 +287,16 @@ SolvePnPParameters = namedtuple(
 )
 
 
+def calc_residuals(vec6: np.ndarray, points2d: np.ndarray, points3d: np.ndarray,
+                   intrinsic_mat: np.ndarray):
+    mat3x4 = vec6_to_mat3x4(vec6)
+    projected_points = project_points(points3d, intrinsic_mat @ mat3x4)
+    return np.sqrt(np.sum((projected_points - points2d)**2, axis=1))
+
+
 def solve_PnP(points_2d: np.ndarray, points_3d: np.array,
-              intrinsic_mat: np.ndarray, parameters: SolvePnPParameters) \
-        -> Tuple[np.ndarray, int]:
+              intrinsic_mat: np.ndarray, huber: bool,
+              parameters: SolvePnPParameters) -> Tuple[np.ndarray, int]:
     _, initial_rvec, initial_tvec, inliers = cv2.solvePnPRansac(
         points_3d,
         points_2d,
@@ -301,17 +307,26 @@ def solve_PnP(points_2d: np.ndarray, points_3d: np.array,
                                       intrinsic_mat, distCoeffs=None,
                                       rvec=initial_rvec, tvec=initial_tvec)
     view_mat = rodrigues_and_translation_to_view_mat3x4(rvec, tvec)
-    '''
-    reproj_mask = _calc_reprojection_error_mask_one_view(
-        points_3d,
-        points_2d,
-        view_mat,
-        intrinsic_mat,
-        parameters.max_reprojection_error
-    )
-    z_mask = _calc_z_mask(points_3d, view_mat, parameters.min_depth)
-    inliers_mask = reproj_mask & z_mask
-    '''
+
+    if huber:
+        '''
+        inliers2 = _calc_reprojection_error_mask_one_view(
+            points_3d,
+            points_2d,
+            view_mat,
+            intrinsic_mat,
+            parameters.max_reprojection_error
+        )
+        '''
+        lm_result_loss = least_squares(
+            fun=calc_residuals,
+            args=(points_2d[inliers].reshape(-1, 2),
+                  points_3d[inliers].reshape(-1, 3), intrinsic_mat,),
+            x0=mat3x4_to_vec6(view_mat),
+            loss='huber', verbose=1)
+        lm_vec6_loss = lm_result_loss.x
+        view_mat = vec6_to_mat3x4(lm_vec6_loss)
+
     return view_mat, inliers.shape[0]
 
 

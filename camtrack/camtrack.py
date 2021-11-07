@@ -70,8 +70,8 @@ def choose_corners_for_PnP(corners: FrameCorners, present_ids: np.ndarray,
 
 def calc_camera_pose(point_cloud_builder: PointCloudBuilder,
                      corners: FrameCorners, intrinsic_mat: np.ndarray,
-                     image_shape: Tuple, max_reproj_error: float = 0.6) \
-        -> Tuple[np.array, float]:
+                     image_shape: Tuple, huber: bool,
+                     max_reproj_error: float = 0.6) -> Tuple[np.array, float]:
     _, (idx_1, idx_2) = snp.intersect(point_cloud_builder.ids.flatten(),
                                       corners.ids.flatten(), indices=True)
     best_ids = choose_corners_for_PnP(corners, idx_2, image_shape, 10)
@@ -83,7 +83,7 @@ def calc_camera_pose(point_cloud_builder: PointCloudBuilder,
         return eye3x4(), 0
 
     view_mat, n_inliers = solve_PnP(points_2d, points_3d, intrinsic_mat,
-                                    params)
+                                    huber, params)
     print(f"{n_inliers}/{points_2d.shape[0]} inliers")
     return view_mat, n_inliers/points_2d.shape[0]
 
@@ -95,6 +95,30 @@ def check_distance_between_cameras(view_mat_1: np.array, view_mat_2: np.array)\
     return np.linalg.norm(pose_1 - pose_2) > 0.2
 
 
+def tricky_range(init_pose: int, end: int, step: int):
+    """ generate  a, a + s, a+2s, ..., a-s, a-2s, ..."""
+    pos = init_pose
+    while 0 <= pos < end:
+        yield pos
+        pos += step
+    pos = init_pose - step
+    while 0 <= pos < end:
+        yield pos
+        pos -= step
+
+    return
+
+
+def find_first_frame(v1, v2, d, n):
+    v1, v2 = min(v1, v2), max(v1, v2)
+    if v2-v1 >= d:
+        d = 0
+    if np.abs(v2+d-n) > np.abs(v1-d):
+        return max(v1-d, 0), 1
+    else:
+        return min(v2+d, ((n-1)//10)*10), -1
+
+
 def frame_by_frame_calc(point_cloud_builder: PointCloudBuilder,
                         corner_storage: CornerStorage, view_mats: np.array,
                         known_views: list, intrinsic_mat: np.ndarray,
@@ -102,13 +126,16 @@ def frame_by_frame_calc(point_cloud_builder: PointCloudBuilder,
     random.seed(42)
     n_frames = len(corner_storage)
     step = 10
+    first_frame, sign = find_first_frame(known_views[0],
+                                         known_views[1], 2*step, n_frames)
 
-    for frame in range(0, n_frames, step):
+    for frame in tricky_range(first_frame, n_frames, step*sign):
         print(f"\nFrame = {frame}")
         if frame not in known_views:
             view_mats[frame], _ = calc_camera_pose(point_cloud_builder,
                                                    corner_storage[frame],
-                                                   intrinsic_mat, image_shape)
+                                                   intrinsic_mat, image_shape,
+                                                   huber=True)
         if frame > 0:
             prev_frame = frame - step
             point_cloud_builder = find_and_add_points3d(
@@ -121,14 +148,15 @@ def frame_by_frame_calc(point_cloud_builder: PointCloudBuilder,
             )
         print(f'{point_cloud_builder.points.shape[0]} 3d points')
 
-    for frame in range(n_frames):
+    for frame in tricky_range(first_frame, n_frames, sign):  # range(n_frames):
         print(f"\nFrame = {frame}")
         if frame not in known_views:
             view_mats[frame], inliers_rate = calc_camera_pose(
                 point_cloud_builder,
                 corner_storage[frame],
                 intrinsic_mat,
-                image_shape
+                image_shape,
+                huber=True
             )
         for _ in range(10):
             frame_2 = random.randint(0, n_frames//step - 1) * step
@@ -141,7 +169,7 @@ def frame_by_frame_calc(point_cloud_builder: PointCloudBuilder,
                     intrinsic_mat,
                     corner_storage[frame],
                     corner_storage[frame_2],
-                    max_reproj_error=0.5
+                    max_reproj_error=0.6
                 )
         print(f'{point_cloud_builder.points.shape[0]} 3d points')
     return view_mats
