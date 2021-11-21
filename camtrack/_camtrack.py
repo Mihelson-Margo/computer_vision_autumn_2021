@@ -29,6 +29,7 @@ import click
 import cv2
 import numpy as np
 import pims
+import time
 from sklearn.preprocessing import normalize
 import sortednp as snp
 from scipy.optimize import least_squares
@@ -148,7 +149,11 @@ def _calc_3d_errors(points3d: np.ndarray,
     vecs_1 = normalize(camera_center_1 - points3d)
     vecs_2 = normalize(camera_center_2 - points3d)
     coss = np.einsum('ij,ij->i', vecs_1, vecs_2)
-    sins = np.sqrt(1 - coss**2)
+    ################
+    sins2 = 1 - coss**2
+    sins2[(sins2 < 0) & (sins2 > -1e-6)] = 1e-8
+    ################
+    sins = np.sqrt(sins2) #  1 - coss**2)
     return (errors2d_1 + errors2d_2)*dists/sins
     #return np.abs(coss)
 
@@ -291,7 +296,7 @@ def calc_residuals(vec6: np.ndarray, points2d: np.ndarray, points3d: np.ndarray,
                    intrinsic_mat: np.ndarray):
     mat3x4 = vec6_to_mat3x4(vec6)
     projected_points = project_points(points3d, intrinsic_mat @ mat3x4)
-    return np.sqrt(np.sum((projected_points - points2d)**2, axis=1))
+    return np.sum(np.abs(projected_points - points2d)).flatten()
 
 
 def solve_PnP(points_2d: np.ndarray, points_3d: np.array,
@@ -563,6 +568,8 @@ def create_cli(track_and_calc_colors):
             known_view_2 = None
 
         camera_parameters = read_camera_parameters(camera)
+
+        t0 = time.process_time()
         poses, point_cloud = track_and_calc_colors(
             camera_parameters,
             corner_storage,
@@ -570,6 +577,9 @@ def create_cli(track_and_calc_colors):
             known_view_1,
             known_view_2
         )
+        dt = time.process_time() - t0
+        print(f"time: {dt}")
+
         write_poses(poses, track_destination)
         write_point_cloud(point_cloud, point_cloud_destination)
 

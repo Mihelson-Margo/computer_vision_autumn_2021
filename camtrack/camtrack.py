@@ -4,6 +4,7 @@ __all__ = [
     'track_and_calc_colors'
 ]
 
+import time
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -16,6 +17,7 @@ from data3d import CameraParameters, PointCloud, Pose
 import frameseq
 from _camtrack import (
     PointCloudBuilder,
+    Correspondences,
     create_cli,
     calc_point_cloud_colors,
     pose_to_view_mat3x4,
@@ -27,7 +29,8 @@ from _camtrack import (
     to_camera_center,
     solve_PnP,
     SolvePnPParameters,
-    eye3x4
+    eye3x4,
+    rodrigues_and_translation_to_view_mat3x4
 )
 
 
@@ -135,7 +138,7 @@ def frame_by_frame_calc(point_cloud_builder: PointCloudBuilder,
             view_mats[frame], _ = calc_camera_pose(point_cloud_builder,
                                                    corner_storage[frame],
                                                    intrinsic_mat, image_shape,
-                                                   huber=True)
+                                                   huber=False)
         if frame > 0:
             prev_frame = frame - step
             point_cloud_builder = find_and_add_points3d(
@@ -156,7 +159,7 @@ def frame_by_frame_calc(point_cloud_builder: PointCloudBuilder,
                 corner_storage[frame],
                 intrinsic_mat,
                 image_shape,
-                huber=True
+                huber=False
             )
         for _ in range(10):
             frame_2 = random.randint(0, n_frames//step - 1) * step
@@ -175,20 +178,114 @@ def frame_by_frame_calc(point_cloud_builder: PointCloudBuilder,
     return view_mats
 
 
+def verify_position(correspondence: Correspondences, view_mat: np.ndarray,
+                    intrinsic_mat: np.ndarray, max_reproj_error: float = 0.6)\
+        -> int:
+    #params = TriangulationParameters(max_reproj_error, 0.1, 0.1)
+    params = TriangulationParameters(10, 0, 0)
+    _, ids, _ = triangulate_correspondences(
+        correspondence,
+        eye3x4(),
+        view_mat,
+        intrinsic_mat,
+        params
+    )
+    return ids.shape[0]
+
+
+def find_and_check_view_mat(correspondence: Correspondences,
+                                 intrinsic_mat: np.ndarray) \
+        -> Tuple[float, np.ndarray]:
+    # default parameters everywhere
+    essential_mat, inliers_mask = cv2.findEssentialMat(
+        correspondence.points_1,
+        correspondence.points_2,
+        intrinsic_mat,
+        method=cv2.RANSAC,
+        prob=0.999,
+        threshold=1.0,
+        maxIters=1000
+        )
+    _, homography_mask = cv2.findHomography(
+        correspondence.points_1,
+        correspondence.points_2,
+        method=cv2.RANSAC,
+        ransacReprojThreshold=3,
+        maxIters=2000,
+        confidence=0.995
+    )
+    n_essential_inliers = np.sum(inliers_mask)
+    n_homography_inliers = np.sum(homography_mask)
+    #print(f"ess_inl: {n_essential_inliers}, homo_inl: {n_homography_inliers}")
+    #if n_homography_inliers/n_essential_inliers > 0.1:
+    #    return np.inf, np.array([])
+
+    r1, r2, t_abs = cv2.decomposeEssentialMat(essential_mat)
+    max_n_inliers = 0
+    view_mat_best = None
+    for r in [r1, r2]:
+        for t in [t_abs, -t_abs]:
+            view_mat = np.hstack((r, t))
+            #print(f"view, r, t shapes = {view_mat.shape}, {r.shape}, {t.shape}")
+            n_inliers = verify_position(correspondence, view_mat, intrinsic_mat)
+            if n_inliers > max_n_inliers:
+                max_n_inliers = n_inliers
+                view_mat_best = view_mat
+    return n_homography_inliers/max_n_inliers, view_mat_best
+
+
+def find_and_initialize_frames(corner_storage: CornerStorage,
+                               intrinsic_mat: np.ndarray)\
+        -> Tuple[Tuple[int, Pose], Tuple[int, Pose]]:
+    n_frames = len(corner_storage)
+    errs = []
+    views = []
+    #for _ in range(1):
+    #    for _ in range(1):
+    #        frame_1 = 0
+    #        frame_2 = 20
+    for frame_1 in range(0, n_frames, 5):
+        for frame_2 in range(frame_1+10, n_frames, 5):
+            correspondence = build_correspondences(corner_storage[frame_1],
+                                                   corner_storage[frame_2])
+            if correspondence.ids.shape[0] < 5:
+                continue
+            #print(f"{frame_1}, {frame_2}, corrs {correspondence.ids.shape[0]}")
+            err, view_mat = find_and_check_view_mat(correspondence,
+                                                    intrinsic_mat)
+            if not np.isfinite(err) or view_mat is None:
+                continue
+
+            view1 = (frame_1, view_mat3x4_to_pose(eye3x4()))
+            view2 = (frame_2, view_mat3x4_to_pose(view_mat))
+
+            #print(err)
+            if err < 0.34:
+                return view1, view2
+            errs.append(err)
+            views.append((view1, view2))
+        # delete this
+        if n_frames > 100:
+            break
+    best_id = np.argmin(np.array(errs))
+    return views[best_id]
+
+
 def track_and_calc_colors(camera_parameters: CameraParameters,
                           corner_storage: CornerStorage,
                           frame_sequence_path: str,
                           known_view_1: Optional[Tuple[int, Pose]] = None,
                           known_view_2: Optional[Tuple[int, Pose]] = None) \
         -> Tuple[List[Pose], PointCloud]:
-    if known_view_1 is None or known_view_2 is None:
-        raise NotImplementedError()
-
     rgb_sequence = frameseq.read_rgb_f32(frame_sequence_path)
     intrinsic_mat = to_opencv_camera_mat3x3(
         camera_parameters,
         rgb_sequence[0].shape[0]
     )
+
+    if known_view_1 is None or known_view_2 is None:
+        known_view_1, known_view_2 = find_and_initialize_frames(corner_storage,
+                                                                intrinsic_mat)
 
     # TODO: implement
     image_shape = (rgb_sequence[0].shape[1], rgb_sequence[0].shape[0])
