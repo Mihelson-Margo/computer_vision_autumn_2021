@@ -195,7 +195,7 @@ def _build_impl(frame_sequence: pims.FramesSequence,
     
     # params for ShiTomasi corner detection
     feature_params = dict(maxCorners=1000,
-                          qualityLevel=0.2,
+                          qualityLevel=0.1, #0.2
                           minDistance=7,
                           blockSize=7)
 
@@ -203,7 +203,7 @@ def _build_impl(frame_sequence: pims.FramesSequence,
     lk_params = dict(winSize=(15, 15),
                      maxLevel=2,
                      criteria=(cv2.TERM_CRITERIA_COUNT | cv2.TERM_CRITERIA_EPS, 10, 0.01),
-                     minEigThreshold=1e-3)  # 1.5*1e-2)
+                     minEigThreshold=1e-4)  # 1e-3
 
     image_0 = (frame_sequence[0] * 255.0).astype(np.uint8)
     max_corner_id = 0
