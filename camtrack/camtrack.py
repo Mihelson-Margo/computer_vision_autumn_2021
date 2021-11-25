@@ -34,12 +34,15 @@ from _camtrack import (
 
 from _corners import StorageImpl
 
+MAX_REPROJ_ERROR = 3
+
 
 def find_and_add_points3d(point_cloud_builder: PointCloudBuilder,
                           view_mat_1: np.ndarray, view_mat_2: np.ndarray,
                           intrinsic_mat: np.ndarray,
                           corners_1: FrameCorners, corners_2: FrameCorners,
-                          max_reproj_error: float = 0.6) -> PointCloudBuilder:
+                          max_reproj_error: float = MAX_REPROJ_ERROR) \
+        -> PointCloudBuilder:
     params = TriangulationParameters(max_reproj_error, 0.1, 0.1)
     correspondence = build_correspondences(corners_1, corners_2)
     if correspondence.ids.shape[0] == 0:
@@ -55,8 +58,8 @@ def find_and_add_points3d(point_cloud_builder: PointCloudBuilder,
     )
 
     n_updated = point_cloud_builder.add_points(ids, points3d, errors)
-    print()
-    print(f'triangulate {ids.shape[0]} points, update {n_updated} of them')
+    #print()
+    #print(f'triangulate {ids.shape[0]} points, update {n_updated} of them')
     return point_cloud_builder
 
 
@@ -81,7 +84,7 @@ def choose_corners_for_PnP(corners: FrameCorners, present_ids: np.ndarray,
 def calc_camera_pose(point_cloud_builder: PointCloudBuilder,
                      corners: FrameCorners, intrinsic_mat: np.ndarray,
                      image_shape: Tuple, huber: bool,
-                     max_reproj_error: float = 0.6) \
+                     max_reproj_error: float = 5) \
         -> Tuple[FrameCorners, np.array, float]:
     _, (idx_1, idx_2) = snp.intersect(point_cloud_builder.ids.flatten(),
                                       corners.ids.flatten(), indices=True)
@@ -90,15 +93,17 @@ def calc_camera_pose(point_cloud_builder: PointCloudBuilder,
     points_2d = corners.points[idx_2[best_ids]]
     params = SolvePnPParameters(max_reproj_error, 0)
     if points_2d.shape[0] < 5:
-        print(f"Too few points to solve PnP")
-        return corners, eye3x4(), 0
+        #print(f"Too few points to solve PnP")
+        raise RuntimeError("Too few points to solve PnP")
+        #return corners, eye3x4(), 0
 
     view_mat, inliers = solve_PnP(points_2d, points_3d, intrinsic_mat,
                                     huber, params)
 
     if inliers is None:
-        print("Failed to calculate view_mat")
-        return corners, eye3x4(), 0
+        raise RuntimeError("Failed to calculate view_mat")
+        #print("Failed to calculate view_mat")
+        #return corners, eye3x4(), 0
 
     corners.relevant[idx_2[best_ids], :] = 0
     corners.relevant[idx_2[best_ids[inliers.flatten()]], 0] = 1
@@ -173,10 +178,10 @@ def frame_by_frame_calc(point_cloud_builder: PointCloudBuilder,
             frames_list[frame], view_mats[frame], inliers_rate = \
                 calc_camera_pose(point_cloud_builder, frames_list[frame],
                                  intrinsic_mat, image_shape, huber=False)
-        for _ in range(0):
+        for _ in range(10):
             frame_2 = random.randint(0, n_frames//step - 1) * step
             if check_distance_between_cameras(view_mats[frame], view_mats[frame_2]):
-                print(f"{frame} <-> {frame_2} triangulation: ", end='')
+                #print(f"{frame} <-> {frame_2} triangulation: ", end='')
                 point_cloud_builder = find_and_add_points3d(
                     point_cloud_builder,
                     view_mats[frame],
@@ -184,15 +189,15 @@ def frame_by_frame_calc(point_cloud_builder: PointCloudBuilder,
                     intrinsic_mat,
                     frames_list[frame],
                     frames_list[frame_2],
-                    max_reproj_error=0.6
+                    #max_reproj_error=MAX_REPROJ_ERROR
                 )
         print(f'{point_cloud_builder.points.shape[0]} 3d points')
     return frames_list, view_mats
 
 
 def verify_position(correspondence: Correspondences, view_mat: np.ndarray,
-                    intrinsic_mat: np.ndarray, max_reproj_error: float = 0.6)\
-        -> int:
+                    intrinsic_mat: np.ndarray,
+                    max_reproj_error: float = MAX_REPROJ_ERROR) -> int:
     #params = TriangulationParameters(max_reproj_error, 0.1, 0.1)
     params = TriangulationParameters(10, 0, 0)
     _, ids, _ = triangulate_correspondences(
@@ -357,7 +362,7 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
     )
 
     frames_list = verify_all_2d_points(frames_list, point_cloud_builder,
-                                       view_mats, intrinsic_mat, 0.6)
+                                       view_mats, intrinsic_mat, MAX_REPROJ_ERROR)
     #relevant_corners = frames_list
     relevant_corners = [frame.filter_relevant() for frame in frames_list]
     relevant_corners = add_corner_with_big_id(relevant_corners)
@@ -378,7 +383,7 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
     )
     point_cloud = point_cloud_builder.build_point_cloud()
     poses = list(map(view_mat3x4_to_pose, view_mats))
-    return poses, point_cloud, new_corner_storage
+    return poses, point_cloud #, new_corner_storage
 
 
 if __name__ == '__main__':

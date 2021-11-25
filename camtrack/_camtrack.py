@@ -188,9 +188,11 @@ def _remove_correspondences_with_ids(correspondences: Correspondences,
 
 
 def build_correspondences(corners_1: FrameCorners, corners_2: FrameCorners,
-                          ids_to_remove=None) -> Correspondences:
-    corners_1 = corners_1.filter_relevant()
-    corners_2 = corners_2.filter_relevant()
+                          ids_to_remove=None, use_outliers=True) \
+        -> Correspondences:
+    if not use_outliers:
+        corners_1 = corners_1.filter_relevant()
+        corners_2 = corners_2.filter_relevant()
     ids_1 = corners_1.ids.flatten()
     ids_2 = corners_2.ids.flatten()
     _, (indices_1, indices_2) = snp.intersect(ids_1, ids_2, indices=True)
@@ -571,7 +573,8 @@ def create_cli(track_and_calc_colors):
         camera_parameters = read_camera_parameters(camera)
 
         t0 = time.process_time()
-        poses, point_cloud, corner_storage = track_and_calc_colors(
+        #poses, point_cloud, corner_storage = track_and_calc_colors(
+        poses, point_cloud = track_and_calc_colors(
             camera_parameters,
             corner_storage,
             frame_sequence,
