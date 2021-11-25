@@ -34,7 +34,8 @@ class FrameCorners:
     (np.searchsorted).
     """
 
-    __slots__ = ('_ids', '_points', '_sizes', '_min_eigenvals', '_dist_err')
+    __slots__ = ('_ids', '_points', '_sizes', '_min_eigenvals', '_dist_err',
+                 '_relevant')
 
     def __init__(self, ids, points, sizes, min_eigenvals, dist_err):
         """
@@ -51,6 +52,7 @@ class FrameCorners:
         self._sizes = sizes
         self._min_eigenvals = min_eigenvals
         self._dist_err = dist_err
+        self._relevant = np.ones(ids.shape).astype(int)
         self._sort()
 
     def _sort(self):
@@ -60,6 +62,7 @@ class FrameCorners:
         self._sizes = self.sizes[sorting_idx].reshape(-1, 1)
         self._min_eigenvals = self.min_eigenvals[sorting_idx].reshape(-1, 1)
         self._dist_err = self.dist_err[sorting_idx].reshape(-1, 1)
+        self._relevant = self.relevant[sorting_idx].reshape(-1, 1)
 
     @staticmethod
     def empty_frame():
@@ -91,6 +94,10 @@ class FrameCorners:
     def dist_err(self):
         return self._dist_err
 
+    @property
+    def relevant(self):
+        return self._relevant
+
     def __iter__(self):
         yield self.ids
         yield self.points
@@ -102,9 +109,18 @@ class FrameCorners:
         self._ids = np.concatenate((self._ids, ids.reshape((-1, 1))))
         self._points = np.concatenate((self._points, points.reshape((-1, 2))))
         self._sizes = np.concatenate((self._sizes, sizes.reshape((-1, 1))))
-        self._min_eigenvals = np.concatenate((self._min_eigenvals, min_eigenvals.reshape((-1, 1))))
+        self._min_eigenvals = np.concatenate((self._min_eigenvals,
+                                              min_eigenvals.reshape((-1, 1))))
         self._dist_err = np.concatenate((self._dist_err, dist_err.reshape(-1, 1)))
+        self._relevant = np.ones(self.ids.shape).astype(int)
         self._sort()
+
+    def filter_relevant(self):
+        mask = self.relevant.astype(int).flatten()
+        return FrameCorners(*[field[mask == 1] for field in self])
+
+    def all_relevant(self):
+        self._relevant = np.ones(self.ids.shape).astype(int)
 
 
 def filter_frame_corners(frame_corners: FrameCorners,
@@ -236,18 +252,6 @@ def calc_track_interval_mappings(corner_storage: CornerStorage) -> np.ndarray:
         left[unique] = np.minimum(left[unique], i)
         right[unique] = np.maximum(right[unique], i)
     return left, right
-
-
-'''
-def check_ids(corner_storage):
-    max_id = max(corners.ids.max() for corners in corner_storage)
-    m = np.full((max_id + 1,), -1)
-    for i, corners in enumerate(corner_storage):
-        if np.sum(m[corners.ids.flatten()] == 0):
-            print("Ups")
-        m[m == 1] = 0
-        m[corners.ids.flatten()] = 1
-'''
 
 
 def calc_track_len_array_mapping(corner_storage: CornerStorage) -> np.ndarray:
