@@ -5,6 +5,7 @@ __all__ = [
 ]
 
 from typing import List, Optional, Tuple
+from scipy.optimize import least_squares
 
 import numpy as np
 import sortednp as snp
@@ -29,7 +30,10 @@ from _camtrack import (
     solve_PnP,
     SolvePnPParameters,
     eye3x4,
-    calc_inlier_indices
+    calc_inlier_indices,
+    vec_to_views_points,
+    views_points_3d_to_vec,
+    calc_residuals_all
 )
 
 from _corners import StorageImpl
@@ -84,7 +88,7 @@ def choose_corners_for_PnP(corners: FrameCorners, present_ids: np.ndarray,
 def calc_camera_pose(point_cloud_builder: PointCloudBuilder,
                      corners: FrameCorners, intrinsic_mat: np.ndarray,
                      image_shape: Tuple, huber: bool,
-                     max_reproj_error: float = 5) \
+                     max_reproj_error: float = MAX_REPROJ_ERROR) \
         -> Tuple[FrameCorners, np.array, float]:
     _, (idx_1, idx_2) = snp.intersect(point_cloud_builder.ids.flatten(),
                                       corners.ids.flatten(), indices=True)
@@ -150,12 +154,14 @@ def frame_by_frame_calc(point_cloud_builder: PointCloudBuilder,
     random.seed(42)
     n_frames = len(corner_storage)
     frames_list = [frame for frame in corner_storage]
+    calced_frames_ids = []
     step = 10
     first_frame, sign = find_first_frame(known_views[0],
                                          known_views[1], 2*step, n_frames)
 
     for frame in tricky_range(first_frame, n_frames, step*sign):
         print(f"\nFrame = {frame}")
+        calced_frames_ids.append(frame)
         if frame not in known_views:
             frames_list[frame], view_mats[frame], _ = \
                 calc_camera_pose(point_cloud_builder, corner_storage[frame],
@@ -172,12 +178,21 @@ def frame_by_frame_calc(point_cloud_builder: PointCloudBuilder,
             )
         print(f'{point_cloud_builder.points.shape[0]} 3d points')
 
+    if len(calced_frames_ids) <= 10:
+        frames_list, point_cloud_builder, view_mats = perform_bundle_adjustment(
+            frames_list,
+            point_cloud_builder,
+            view_mats,
+            intrinsic_mat,
+            calced_frames_ids
+        )
+
     for frame in tricky_range(first_frame, n_frames, sign):  # range(n_frames):
         print(f"\nFrame = {frame}")
         if frame not in known_views:
             frames_list[frame], view_mats[frame], inliers_rate = \
                 calc_camera_pose(point_cloud_builder, frames_list[frame],
-                                 intrinsic_mat, image_shape, huber=False)
+                                 intrinsic_mat, image_shape, huber=True)
         for _ in range(10):
             frame_2 = random.randint(0, n_frames//step - 1) * step
             if check_distance_between_cameras(view_mats[frame], view_mats[frame_2]):
@@ -192,6 +207,21 @@ def frame_by_frame_calc(point_cloud_builder: PointCloudBuilder,
                     #max_reproj_error=MAX_REPROJ_ERROR
                 )
         print(f'{point_cloud_builder.points.shape[0]} 3d points')
+
+    print(f"known_views = {known_views}")
+    for frame in known_views:
+        frames_list[frame], view_mats[frame], _ = \
+            calc_camera_pose(point_cloud_builder, corner_storage[frame],
+                             intrinsic_mat, image_shape, huber=False)
+    '''
+    frames_list, point_cloud_builder, view_mats = perform_bundle_adjustment(
+        frames_list,
+        point_cloud_builder,
+        view_mats,
+        intrinsic_mat,
+        list(range(n_frames))
+    )
+    '''
     return frames_list, view_mats
 
 
@@ -293,8 +323,8 @@ def add_corner_with_big_id(corner_list_storage: list) -> list:
     new_p = np.array([[0, 0]])
     new_sizes = np.array([10])
     for i in range(len(corner_list_storage)):
-        corner_list_storage[i].add_points(ids, new_p, new_sizes, np.ones((1, 1)),
-                                          np.zeros((1, 1)))
+        corner_list_storage[i].add_points(ids, new_p, new_sizes,
+                                          np.ones((1, 1)), np.zeros((1, 1)))
 
     return corner_list_storage
 
@@ -313,10 +343,86 @@ def verify_all_2d_points(corner_list_storage: list,
             corner_list_storage[i].points[idx_2d],
             intrinsic_mat @ view_mats[i], max_reproj_error)
         corner_list_storage[i].relevant[:, 0] = 0
-        #corner_list_storage[i].relevant[0, 0] = 1
         corner_list_storage[i].relevant[idx_2d[inliers], 0] = 1
 
     return corner_list_storage
+
+
+def bundle_adjustment(corner_list_storage: list,
+                      point_cloud_builder: PointCloudBuilder,
+                      view_mats: list, intrinsic_mat: np.ndarray,
+                      max_reproj_error: float) \
+        -> Tuple[list, PointCloudBuilder, list]:
+    print("Start bundle adjustment")
+    corner_list_storage = verify_all_2d_points(
+        corner_list_storage,
+        point_cloud_builder,
+        view_mats,
+        intrinsic_mat,
+        max_reproj_error*2
+    )
+
+    '''
+    relevant_corners = [frame.filter_relevant() for frame in corner_list_storage]
+    ids3d = point_cloud_builder.ids
+    points3d = point_cloud_builder.points
+    '''
+    points2d_list = []
+    idx3d_list = []
+    for frame in corner_list_storage:
+        corners = frame.filter_relevant()
+        _, (idx2d, idx3d) = snp.intersect(corners.ids.flatten(),
+                                          point_cloud_builder.ids.flatten(),
+                                          indices=True)
+        points2d_list.append(corners.points[idx2d])
+        idx3d_list.append(idx3d)
+
+    init_vec = views_points_3d_to_vec(view_mats, point_cloud_builder.points)
+    lm_result = least_squares(
+        fun=calc_residuals_all,
+        args=(points2d_list, idx3d_list, intrinsic_mat),
+        x0=init_vec,
+        method='lm',
+        max_nfev=10,
+        verbose=1)
+
+    print("Optimized!")
+    res_vec = lm_result.x
+    view_mats, points3d = vec_to_views_points(res_vec, len(view_mats))
+    idx3d_all = point_cloud_builder.ids
+    new_point_cloud_builder = PointCloudBuilder(idx3d_all, points3d,
+                                                np.zeros(idx3d_all.shape))
+
+    new_corner_list_storage = verify_all_2d_points(
+        corner_list_storage,
+        new_point_cloud_builder,
+        view_mats,
+        intrinsic_mat,
+        max_reproj_error
+    )
+    return new_corner_list_storage, new_point_cloud_builder, view_mats
+
+
+def perform_bundle_adjustment(corner_list_storage: list,
+                              point_cloud_builder: PointCloudBuilder,
+                              view_mats: list, intrinsic_mat: np.ndarray,
+                              frame_sublist: list) \
+        -> Tuple[list, PointCloudBuilder, list]:
+    print(f"For frames {frame_sublist}")
+    corners_sublist = [corner_list_storage[frame] for frame in frame_sublist]
+    view_mats_sublist = [view_mats[frame] for frame in frame_sublist]
+    new_corner_sub, new_pc_builder, new_view_sub = bundle_adjustment(
+        corners_sublist,
+        point_cloud_builder,
+        view_mats_sublist,
+        intrinsic_mat,
+        max_reproj_error=MAX_REPROJ_ERROR
+    )
+    for i, frame in enumerate(frame_sublist):
+        corner_list_storage[frame] = new_corner_sub[i]
+        view_mats[frame] = new_view_sub[i]
+
+    return corner_list_storage, new_pc_builder, view_mats
 
 
 def track_and_calc_colors(camera_parameters: CameraParameters,

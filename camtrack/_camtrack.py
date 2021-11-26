@@ -19,7 +19,10 @@ __all__ = [
     'triangulate_correspondences',
     'view_mat3x4_to_pose',
     'solve_PnP',
-    'SolvePnPParameters'
+    'SolvePnPParameters',
+    'vec_to_views_points',
+    'views_points_3d_to_vec',
+    'calc_residuals_all'
 ]
 
 from collections import namedtuple
@@ -91,6 +94,23 @@ def vec6_to_mat3x4(vec6):
     mat3x4[:, :3] = R
     mat3x4[:, 3] = t
     return mat3x4
+
+
+def views_points_3d_to_vec(views: list, points3d: np.ndarray) -> np.ndarray:
+    n = len(views)
+    views_vec = np.zeros(6*n)
+    for i, view in enumerate(views):
+        views_vec[6*i:6*(i+1)] = mat3x4_to_vec6(view)
+    return np.hstack((views_vec, points3d.flatten()))
+
+
+def vec_to_views_points(vec: np.ndarray, n: int) -> Tuple[list, np.ndarray]:
+    points3d = vec[6*n:].reshape(-1, 3)
+    views = []
+    for i in range(n):
+        view = vec6_to_mat3x4(vec[6*i: 6*(i+1)])
+        views.append(view)
+    return views, points3d
 
 
 def _to_homogeneous(points):
@@ -295,11 +315,40 @@ SolvePnPParameters = namedtuple(
 )
 
 
-def calc_residuals(vec6: np.ndarray, points2d: np.ndarray, points3d: np.ndarray,
-                   intrinsic_mat: np.ndarray):
+def calc_residuals_one_view(vec6: np.ndarray, points2d: np.ndarray,
+                            points3d: np.ndarray, intrinsic_mat: np.ndarray):
     mat3x4 = vec6_to_mat3x4(vec6)
     projected_points = project_points(points3d, intrinsic_mat @ mat3x4)
-    return np.sum(np.abs(projected_points - points2d)).flatten()
+    return (projected_points - points2d).flatten()
+
+
+'''
+def calc_residuals_all(vec: np.ndarray, corner_list_storage: list,
+                       ids3d: np.ndarray, intrinsic_mat: np.ndarray):
+    n = len(corner_list_storage)
+    view_mats, points3d = vec_to_views_points(vec, n)
+    residuals = np.array([])
+    for corners, view in zip(corner_list_storage, view_mats):
+        _, (idx1, idx2) = snp.intersect(corners.ids.flatten(), ids3d.flatten(),
+                                        indices=True)
+        projected_points = project_points(points3d[idx2], intrinsic_mat @ view)
+        curr = (projected_points - corners.points[idx1]).flatten()
+        residuals = np.hstack((residuals, curr))
+    return residuals
+'''
+
+
+def calc_residuals_all(vec: np.ndarray, points2d_list: list,
+                       idx3d_list: list, intrinsic_mat: np.ndarray):
+    #print('-')
+    n = len(points2d_list)
+    view_mats, points3d = vec_to_views_points(vec, n)
+    residuals = np.array([])
+    for points2d, idx3d, view in zip(points2d_list, idx3d_list, view_mats):
+        projected_points = project_points(points3d[idx3d], intrinsic_mat @ view)
+        curr = (projected_points - points2d).flatten()
+        residuals = np.hstack((residuals, curr))
+    return residuals
 
 
 def solve_PnP(points_2d: np.ndarray, points_3d: np.array,
@@ -317,21 +366,20 @@ def solve_PnP(points_2d: np.ndarray, points_3d: np.array,
     view_mat = rodrigues_and_translation_to_view_mat3x4(rvec, tvec)
 
     if huber:
-        '''
-        inliers2 = _calc_reprojection_error_mask_one_view(
+        inliers = _calc_reprojection_error_mask_one_view(
             points_3d,
             points_2d,
             view_mat,
             intrinsic_mat,
             parameters.max_reprojection_error
         )
-        '''
+
         lm_result_loss = least_squares(
-            fun=calc_residuals,
+            fun=calc_residuals_one_view,
             args=(points_2d[inliers].reshape(-1, 2),
                   points_3d[inliers].reshape(-1, 3), intrinsic_mat,),
             x0=mat3x4_to_vec6(view_mat),
-            loss='huber', verbose=1)
+            loss='cauchy', verbose=1) #soft_l1
         lm_vec6_loss = lm_result_loss.x
         view_mat = vec6_to_mat3x4(lm_vec6_loss)
 
