@@ -454,6 +454,7 @@ class PointCloudBuilder:
                                           indices=True)
         mask_new = (self._errors[idx_1] > errors[idx_2]).flatten()
         self._points[idx_1[mask_new]] = points[idx_2[mask_new]]
+        self._errors[idx_1[mask_new]] = errors[idx_2[mask_new]]
         self._ids = np.vstack((self.ids, np.delete(ids, idx_2, axis=0)))
         self._points = np.vstack((self.points, np.delete(points, idx_2, axis=0)))
         self._errors = np.vstack((self.errors, np.delete(errors, idx_2, axis=0)))

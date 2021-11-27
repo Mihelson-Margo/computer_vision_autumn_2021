@@ -151,7 +151,6 @@ def frame_by_frame_calc(point_cloud_builder: PointCloudBuilder,
                         corner_storage: CornerStorage, view_mats: np.array,
                         known_views: list, intrinsic_mat: np.ndarray,
                         image_shape: Tuple):
-    random.seed(42)
     n_frames = len(corner_storage)
     frames_list = [frame for frame in corner_storage]
     calced_frames_ids = []
@@ -276,6 +275,7 @@ def find_and_check_view_mat(correspondence: Correspondences,
     for r in [r1, r2]:
         for t in [t_abs, -t_abs]:
             view_mat = np.hstack((r, t))
+            #view_mat = np.hstack((r, r.T @ -t.reshape(-1, 1)))
             #print(f"view, r, t shapes = {view_mat.shape}, {r.shape}, {t.shape}")
             n_inliers, m_cos = verify_position(correspondence, view_mat,
                                                intrinsic_mat)
@@ -293,13 +293,14 @@ def find_and_check_view_mat(correspondence: Correspondences,
 def find_and_initialize_frames(corner_storage: CornerStorage,
                                intrinsic_mat: np.ndarray)\
         -> Tuple[Tuple[int, Pose], Tuple[int, Pose]]:
+
     n_frames = len(corner_storage)
     errs = []
     views = []
     #for _ in range(1):
     #    for _ in range(1):
     #        frame_1 = 0
-    #        frame_2 = 25
+    #        frame_2 = 30
     for frame_1 in range(0, n_frames, 5):
         for frame_2 in range(frame_1+10, n_frames, 5):
             correspondence = build_correspondences(corner_storage[frame_1],
@@ -320,7 +321,7 @@ def find_and_initialize_frames(corner_storage: CornerStorage,
             # 25% iliers
             # soda: not ok 25, 30, 40,
             # soda ok: 20
-            if (err < 0.1 and 1-m_cos > 0.001) or  \
+            if (err < 0.1 and 1-m_cos > 0.001) or \
                (err < 0.34 and 1 - m_cos > 0.005 and inl_rate >= 0.25):  # 0.005 0.003, 0.01
                 #print("OK")
                 return view1, view2
@@ -367,12 +368,59 @@ def verify_all_2d_points(corner_list_storage: list,
     return corner_list_storage
 
 
+def mass_retriangulation(corner_list_storage: list,
+                         point_cloud_builder: PointCloudBuilder,
+                         view_mats: list, intrinsic_mat: np.ndarray,
+                         max_reproj_error: float) -> PointCloudBuilder:
+    max_id = max(corners.ids.max() for corners in corner_list_storage)
+    params = TriangulationParameters(max_reproj_error, 0.1, 0.1)
+    n_frames = len(corner_list_storage)
+
+    for _ in range(10):
+        frame_1 = random.randint(0, n_frames - 1)
+        frame_2 = random.randint(0, n_frames - 1)
+        correspondence = build_correspondences(corner_list_storage[frame_1],
+                                               corner_list_storage[frame_2])
+        if correspondence.ids.shape[0] == 0:
+            continue
+        points3d, ids, _, _ = triangulate_correspondences(
+            correspondence,
+            view_mats[frame_1],
+            view_mats[frame_2],
+            intrinsic_mat,
+            params
+        )
+        inliers_cnt = np.zeros((max_id + 1), int)
+        for corners, view_mat in zip(corner_list_storage, view_mats):
+            _, (idx_3d, idx_2d) = snp.intersect(
+                point_cloud_builder.ids.flatten(), corners.ids.flatten(),
+                indices=True)
+            inliers = calc_inlier_indices(
+                point_cloud_builder.points[idx_3d],
+                corners.points[idx_2d],
+                intrinsic_mat @ view_mat, max_reproj_error)
+            inliers_ids = corners.ids[idx_2d[inliers]]
+            inliers_cnt[inliers_ids] += 1
+
+        point_cloud_builder.add_points(ids, points3d, inliers_cnt[ids]*-1)
+
+    #print(f"errors = {point_cloud_builder.errors.flatten()}")
+    return point_cloud_builder
+
+
 def bundle_adjustment(corner_list_storage: list,
                       point_cloud_builder: PointCloudBuilder,
                       view_mats: list, intrinsic_mat: np.ndarray,
                       max_reproj_error: float) \
         -> Tuple[list, PointCloudBuilder, list]:
     print("Start bundle adjustment")
+    point_cloud_builder = mass_retriangulation(
+        corner_list_storage,
+        point_cloud_builder,
+        view_mats,
+        intrinsic_mat,
+        max_reproj_error
+    )
     corner_list_storage = verify_all_2d_points(
         corner_list_storage,
         point_cloud_builder,
@@ -450,6 +498,7 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
                           known_view_1: Optional[Tuple[int, Pose]] = None,
                           known_view_2: Optional[Tuple[int, Pose]] = None) \
         -> Tuple[List[Pose], PointCloud]:
+    random.seed(42)
     rgb_sequence = frameseq.read_rgb_f32(frame_sequence_path)
     intrinsic_mat = to_opencv_camera_mat3x3(
         camera_parameters,
