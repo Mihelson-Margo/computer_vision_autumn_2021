@@ -261,7 +261,7 @@ def triangulate_correspondences(correspondences: Correspondences,
                                 view_mat_1: np.ndarray, view_mat_2: np.ndarray,
                                 intrinsic_mat: np.ndarray,
                                 parameters: TriangulationParameters) \
-        -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        -> Tuple[np.ndarray, np.ndarray, np.ndarray, float]:
     points2d_1 = correspondences.points_1
     points2d_2 = correspondences.points_2
     normalized_points2d_1 = cv2.undistortPoints(
@@ -305,8 +305,9 @@ def triangulate_correspondences(correspondences: Correspondences,
         parameters.min_triangulation_angle_deg
     )
     common_mask = reprojection_error_mask & z_mask & angle_mask
+    ids = correspondences.ids[common_mask]
 
-    return points3d[common_mask], correspondences.ids[common_mask], errors3d
+    return points3d[common_mask], ids, errors3d, median_cos
 
 
 SolvePnPParameters = namedtuple(
@@ -379,7 +380,7 @@ def solve_PnP(points_2d: np.ndarray, points_3d: np.array,
             args=(points_2d[inliers].reshape(-1, 2),
                   points_3d[inliers].reshape(-1, 3), intrinsic_mat,),
             x0=mat3x4_to_vec6(view_mat),
-            loss='cauchy', verbose=1) #soft_l1
+            loss='cauchy', verbose=1) #soft_l1, cauchy
         lm_vec6_loss = lm_result_loss.x
         view_mat = vec6_to_mat3x4(lm_vec6_loss)
 

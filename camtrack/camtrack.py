@@ -53,7 +53,7 @@ def find_and_add_points3d(point_cloud_builder: PointCloudBuilder,
         print(f"No points to triangulate")
         return point_cloud_builder
 
-    points3d, ids, errors = triangulate_correspondences(
+    points3d, ids, errors, _ = triangulate_correspondences(
         correspondence,
         view_mat_1,
         view_mat_2,
@@ -102,7 +102,7 @@ def calc_camera_pose(point_cloud_builder: PointCloudBuilder,
         #return corners, eye3x4(), 0
 
     view_mat, inliers = solve_PnP(points_2d, points_3d, intrinsic_mat,
-                                    huber, params)
+                                  huber, params)
 
     if inliers is None:
         raise RuntimeError("Failed to calculate view_mat")
@@ -178,7 +178,8 @@ def frame_by_frame_calc(point_cloud_builder: PointCloudBuilder,
             )
         print(f'{point_cloud_builder.points.shape[0]} 3d points')
 
-    if len(calced_frames_ids) <= 10:
+    if len(calced_frames_ids) <= 10 and \
+            point_cloud_builder.points.shape[0] <= 1500:
         frames_list, point_cloud_builder, view_mats = perform_bundle_adjustment(
             frames_list,
             point_cloud_builder,
@@ -212,7 +213,7 @@ def frame_by_frame_calc(point_cloud_builder: PointCloudBuilder,
     for frame in known_views:
         frames_list[frame], view_mats[frame], _ = \
             calc_camera_pose(point_cloud_builder, corner_storage[frame],
-                             intrinsic_mat, image_shape, huber=False)
+                             intrinsic_mat, image_shape, huber=True)
     '''
     frames_list, point_cloud_builder, view_mats = perform_bundle_adjustment(
         frames_list,
@@ -227,22 +228,23 @@ def frame_by_frame_calc(point_cloud_builder: PointCloudBuilder,
 
 def verify_position(correspondence: Correspondences, view_mat: np.ndarray,
                     intrinsic_mat: np.ndarray,
-                    max_reproj_error: float = MAX_REPROJ_ERROR) -> int:
+                    max_reproj_error: float = MAX_REPROJ_ERROR) \
+        -> Tuple[int, float]:
     #params = TriangulationParameters(max_reproj_error, 0.1, 0.1)
-    params = TriangulationParameters(10, 0, 0)
-    _, ids, _ = triangulate_correspondences(
+    params = TriangulationParameters(2*MAX_REPROJ_ERROR, 0.1, 0.1)
+    _, ids, _, median_cos = triangulate_correspondences(
         correspondence,
         eye3x4(),
         view_mat,
         intrinsic_mat,
         params
     )
-    return ids.shape[0]
+    return ids.shape[0], median_cos
 
 
 def find_and_check_view_mat(correspondence: Correspondences,
                                  intrinsic_mat: np.ndarray) \
-        -> Tuple[float, np.ndarray]:
+        -> Tuple[np.ndarray, float, float, float]:
     # default parameters everywhere
     essential_mat, inliers_mask = cv2.findEssentialMat(
         correspondence.points_1,
@@ -251,15 +253,15 @@ def find_and_check_view_mat(correspondence: Correspondences,
         method=cv2.RANSAC,
         prob=0.999,
         threshold=1.0,
-        maxIters=1000
+        maxIters=2000
         )
     _, homography_mask = cv2.findHomography(
         correspondence.points_1,
         correspondence.points_2,
         method=cv2.RANSAC,
-        ransacReprojThreshold=3,
+        ransacReprojThreshold=MAX_REPROJ_ERROR,
         maxIters=2000,
-        confidence=0.995
+        confidence=0.999
     )
     n_essential_inliers = np.sum(inliers_mask)
     n_homography_inliers = np.sum(homography_mask)
@@ -270,15 +272,22 @@ def find_and_check_view_mat(correspondence: Correspondences,
     r1, r2, t_abs = cv2.decomposeEssentialMat(essential_mat)
     max_n_inliers = 0
     view_mat_best = None
+    m_cos_best = None
     for r in [r1, r2]:
         for t in [t_abs, -t_abs]:
             view_mat = np.hstack((r, t))
             #print(f"view, r, t shapes = {view_mat.shape}, {r.shape}, {t.shape}")
-            n_inliers = verify_position(correspondence, view_mat, intrinsic_mat)
+            n_inliers, m_cos = verify_position(correspondence, view_mat,
+                                               intrinsic_mat)
             if n_inliers > max_n_inliers:
                 max_n_inliers = n_inliers
                 view_mat_best = view_mat
-    return n_homography_inliers/max_n_inliers, view_mat_best
+                m_cos_best = m_cos
+
+    homo_inl_rate = n_homography_inliers/max_n_inliers
+    total_inl_rate = max_n_inliers/correspondence.ids.shape[0]
+    #print(correspondence.ids.shape[0])
+    return view_mat_best, homo_inl_rate, total_inl_rate, m_cos_best
 
 
 def find_and_initialize_frames(corner_storage: CornerStorage,
@@ -290,7 +299,7 @@ def find_and_initialize_frames(corner_storage: CornerStorage,
     #for _ in range(1):
     #    for _ in range(1):
     #        frame_1 = 0
-    #        frame_2 = 20
+    #        frame_2 = 25
     for frame_1 in range(0, n_frames, 5):
         for frame_2 in range(frame_1+10, n_frames, 5):
             correspondence = build_correspondences(corner_storage[frame_1],
@@ -298,19 +307,29 @@ def find_and_initialize_frames(corner_storage: CornerStorage,
             if correspondence.ids.shape[0] < 5:
                 continue
             #print(f"{frame_1}, {frame_2}, corrs {correspondence.ids.shape[0]}")
-            err, view_mat = find_and_check_view_mat(correspondence,
-                                                    intrinsic_mat)
+            view_mat, err, inl_rate, m_cos = find_and_check_view_mat(
+                correspondence, intrinsic_mat
+            )
             if not np.isfinite(err) or view_mat is None:
                 continue
 
             view1 = (frame_1, view_mat3x4_to_pose(eye3x4()))
             view2 = (frame_2, view_mat3x4_to_pose(view_mat))
 
-            #print(err)
-            if err < 0.34:
+            #print(f"frame2 = {frame_2}, mcos = {m_cos}, err = {err}, inl_rate = {inl_rate}")
+            # 25% iliers
+            # soda: not ok 25, 30, 40,
+            # soda ok: 20
+            if (err < 0.1 and 1-m_cos > 0.001) or  \
+               (err < 0.34 and 1 - m_cos > 0.005 and inl_rate >= 0.25):  # 0.005 0.003, 0.01
+                #print("OK")
                 return view1, view2
+
             errs.append(err)
             views.append((view1, view2))
+            #### delete
+            #if frame_2 - frame_1 > 200:
+            #    raise RuntimeError()
         # delete this
         if n_frames > 100:
             break
