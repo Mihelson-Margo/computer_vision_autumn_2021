@@ -355,15 +355,19 @@ def calc_residuals_all(vec: np.ndarray, points2d_list: list,
 def solve_PnP(points_2d: np.ndarray, points_3d: np.array,
               intrinsic_mat: np.ndarray, huber: bool,
               parameters: SolvePnPParameters) -> Tuple[np.ndarray, np.ndarray]:
-    _, initial_rvec, initial_tvec, inliers = cv2.solvePnPRansac(
+    ret, initial_rvec, initial_tvec, inliers = cv2.solvePnPRansac(
         points_3d,
         points_2d,
         intrinsic_mat,
         distCoeffs=None
     )
-    rvec, tvec = cv2.solvePnPRefineLM(points_3d[inliers], points_2d[inliers],
-                                      intrinsic_mat, distCoeffs=None,
-                                      rvec=initial_rvec, tvec=initial_tvec)
+    if not ret:
+        return None, None
+    rvec, tvec = cv2.solvePnPRefineLM(
+        points_3d[inliers], points_2d[inliers],
+        intrinsic_mat, distCoeffs=None,
+        rvec=initial_rvec, tvec=initial_tvec
+    )
     view_mat = rodrigues_and_translation_to_view_mat3x4(rvec, tvec)
 
     if huber:

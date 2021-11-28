@@ -97,17 +97,17 @@ def calc_camera_pose(point_cloud_builder: PointCloudBuilder,
     points_2d = corners.points[idx_2[best_ids]]
     params = SolvePnPParameters(max_reproj_error, 0)
     if points_2d.shape[0] < 5:
-        #print(f"Too few points to solve PnP")
-        raise RuntimeError("Too few points to solve PnP")
-        #return corners, eye3x4(), 0
+        print(f"Too few points to solve PnP")
+        #raise RuntimeError("Too few points to solve PnP")
+        return corners, eye3x4(), 0
 
     view_mat, inliers = solve_PnP(points_2d, points_3d, intrinsic_mat,
                                   huber, params)
 
-    if inliers is None:
-        raise RuntimeError("Failed to calculate view_mat")
-        #print("Failed to calculate view_mat")
-        #return corners, eye3x4(), 0
+    if view_mat is None or inliers is None:
+        #raise RuntimeError("Failed to calculate view_mat")
+        print("Failed to calculate view_mat")
+        return corners, eye3x4(), 0
 
     corners.relevant[idx_2[best_ids], :] = 0
     corners.relevant[idx_2[best_ids[inliers.flatten()]], 0] = 1
